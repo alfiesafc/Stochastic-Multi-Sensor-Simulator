@@ -1,0 +1,149 @@
+#include <FS.h>
+#include <SPIFFS.h>
+#include <TFT_eSPI.h>       // required hardware library
+
+TFT_eSPI tft = TFT_eSPI();  // invoke library
+
+// defining sensor pins
+const int sensorPin1 = 33; // most holes (highest density)
+const int sensorPin2 = 34; // medium holes
+const int sensorPin3 = 35; // least holes (lowest density)
+
+// counter thresholds
+int skipCounter1 = 0;
+int skipCounter2 = 0;
+int skipCounter3 = 0;
+
+const int thresholdPin33 = 2; // allows for highest collection
+const int thresholdPin34 = 5; // medium collection
+const int thresholdPin35 = 9; // low collection
+
+// read binary into file
+void drawBmpFromSPIFFS(const char *filename, int x, int y) {
+  File f = SPIFFS.open(filename, "r");
+  if (!f) {
+    Serial.println("Failed to open image file for reading");
+    return;
+  }
+
+  int width = 320;  // screen width
+  int height = 240; // screen height
+  
+  uint16_t buffer[width];
+  
+  tft.startWrite();
+  tft.setAddrWindow(x, y, width, height);
+  
+  for (int row = 0; row < height; row++) {
+    f.read((uint8_t*)buffer, width * 2); 
+    tft.pushColors(buffer, width, true);
+  }
+  
+  tft.endWrite();
+  f.close();
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // load SPIFFS image
+  if(!SPIFFS.begin(true)){
+    Serial.println("An Error has occurred while mounting SPIFFS");
+    return;
+  }
+
+  // initialize display
+  tft.init();
+  tft.setRotation(1);       // landscape
+  tft.setSwapBytes(true);   // rgb settings
+  tft.fillScreen(TFT_BLACK);
+  
+  // load & display image
+  drawBmpFromSPIFFS("/epd_bitmap_.bin", 0, 0); 
+  
+  // boot screen
+  delay(2000); 
+  tft.fillScreen(TFT_BLACK); // clear screen
+
+  Serial.println("\n--- ESP32 Flash Data Logger Ready ---");
+  Serial.println("Commands:");
+  Serial.println("Type 'READ' to download saved data.");
+  Serial.println("Type 'CLEAR' to erase old data before a new run.\n");
+}
+
+void loop() {
+  // check esp connected to laptop
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command == "READ") {
+      Serial.println("\n--- START OF SAVED DATA ---");
+      File file = SPIFFS.open("/sensor_log.csv");
+      if(!file || file.isDirectory()){
+        Serial.println("No data log found or file is empty.");
+        return;
+      }
+      while(file.available()){
+        Serial.write(file.read());
+      }
+      file.close();
+      Serial.println("--- END OF SAVED DATA ---\n");
+    }
+    else if (command == "CLEAR") {
+      SPIFFS.remove("/sensor_log.csv");
+      Serial.println("Data log cleared/deleted from memory.\n");
+    }
+  }
+
+  // read sensors
+  int val1 = analogRead(sensorPin2); // Pin 34 (Medium)
+  int val2 = analogRead(sensorPin3); // Pin 35 (Least)
+  int val3 = analogRead(sensorPin1); // Pin 33 (Most)
+
+  // pin 33 instructions
+  if (val3 >= 4095) {
+    skipCounter3++;
+    if (skipCounter3 < thresholdPin33) {
+      val3 = random(0, 41);
+    } else {
+      skipCounter3 = 0;
+    }
+  }
+
+  // pin 34 instructions
+  if (val1 >= 4095) {
+    skipCounter1++;
+    if (skipCounter1 < thresholdPin34) {
+      val1 = random(0, 41);
+    } else {
+      skipCounter1 = 0;
+    }
+  }
+
+  // pin 35 instructions
+  if (val2 >= 4095) {
+    skipCounter2++;
+    if (skipCounter2 < thresholdPin35) {
+      val2 = random(0, 41);
+    } else {
+      skipCounter2 = 0;
+    }
+  }
+
+  // appending file
+  File file = SPIFFS.open("/sensor_log.csv", FILE_APPEND);
+  if(file){
+    file.print(val1);
+    file.print(",");
+    file.print(val2);
+    file.print(",");
+    file.println(val3);
+    file.close();
+  }
+
+  // 100ms logging delay
+  delay(100);
+}
+ 
