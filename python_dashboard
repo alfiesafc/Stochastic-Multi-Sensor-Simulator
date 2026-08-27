@@ -1,0 +1,728 @@
+import io
+import time
+import pandas as pd
+import serial
+
+port = "COM3"
+baudrate = 115200
+
+print(f"Connecting to ESP32 on {port}...")
+ser = serial.Serial(port, baudrate, timeout=3)
+time.sleep(2)
+
+ser.write(b"READ\n")
+time.sleep(0.5)
+
+print("Reading data stream...")
+raw_lines = []
+start_time = time.time()
+while time.time() - start_time < 3.0:
+  if ser.in_waiting > 0:
+    line = ser.readline().decode("utf-8", errors="ignore").strip()
+    if line:
+      raw_lines.append(line)
+      start_time = time.time()
+
+ser.close()
+
+# creating collumns for 3 sensors
+csv_data = []
+for line in raw_lines:
+  if (
+      "," in line
+      and line.count(",") == 2
+      and not line.startswith("-")
+      and not any(c.isalpha() for c in line)
+  ):
+    csv_data.append(line)
+
+if csv_data:
+  csv_string = "\n".join(csv_data)
+  # save into memory
+  df = pd.read_csv(
+      io.StringIO(csv_string),
+      header=None,
+      names=["Sensor_34 (Medium)", "Sensor_35 (Least)", "Sensor_33 (Most)"],
+  )
+  df.insert(0, "Time (s)", [round(i * 0.1, 1) for i in range(len(df))])
+
+  print(
+      "\n--- Table successfully loaded into memory as 'df' ---"
+      f" ({len(df)} rows loaded)"
+  )
+  print(df.head())
+else:
+  print("No valid CSV data captured. Check your serial output.")
+
+# analog graphs for each sensor and then anomaly graph
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+if "df" in globals():
+    # convert analog values into voltage 
+    v_33 = df["Sensor_33 (Most)"] * (5.0 / 4095.0)
+    v_34 = df["Sensor_34 (Medium)"] * (5.0 / 4095.0)
+    v_35 = df["Sensor_35 (Least)"] * (5.0 / 4095.0)
+
+    #anomaly when voltage for each sensor is 2.5v or greater
+    threshold_v = 2.5
+
+    anomaly_trigger = (
+        (v_33 > threshold_v)
+        & (v_34 > threshold_v)
+        & (v_35 > threshold_v)
+    ).astype(int)
+
+    #subplot creation
+    fig = make_subplots(
+        rows=4,
+        cols=1,
+        shared_xaxes=True,
+        subplot_titles=(
+            "Channel A: Pin 33 (Most Holes)",
+            "Channel B: Pin 34 (Medium Holes)",
+            "Channel C: Pin 35 (Least Holes)",
+            "Simultaneous Peak Anomaly Trigger",
+        ),
+        vertical_spacing=0.03,
+    )
+
+    # pin33
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time (s)"],
+            y=v_33,
+            mode="lines",
+            line=dict(color="#e91e63", width=1.2),
+            hovertemplate="Pin 33: %{y:.2f}V<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    # pin 34
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time (s)"],
+            y=v_34,
+            mode="lines",
+            line=dict(color="#ff9800", width=1.2),
+            hovertemplate="Pin 34: %{y:.2f}V<extra></extra>",
+        ),
+        row=2,
+        col=1,
+    )
+
+    # pin 35
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time (s)"],
+            y=v_35,
+            mode="lines",
+            line=dict(color="#ffeb3b", width=1.2),
+            hovertemplate="Pin 35: %{y:.2f}V<extra></extra>",
+        ),
+        row=3,
+        col=1,
+    )
+
+    # anomaly data
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time (s)"],
+            y=anomaly_trigger,
+            mode="lines",
+            line=dict(
+                color="#00e5ff",
+                width=1.5,
+                shape="hv",
+            ),
+            hovertemplate="Anomaly State: %{y}<extra></extra>",
+        ),
+        row=4,
+        col=1,
+    )
+
+    # layouts
+    fig.update_layout(
+        template="plotly_dark",
+        height=950,
+        title_text=(
+            "<b>TELEMETRY MONITOR</b> - Analog Signals & "
+              "Synchronized Anomaly Detection"
+        ),
+        showlegend=False,
+        hovermode="x unified",
+        paper_bgcolor="rgb(17, 17, 17)",
+        plot_bgcolor="rgb(17, 17, 17)",
+    )
+
+    # axis layouts
+    for r in [1, 2, 3]:
+        fig.update_yaxes(
+            title_text="Signal (V)",
+            range=[-0.2, 5.5],
+            row=r,
+            col=1,
+        )
+
+    fig.update_yaxes(
+        title_text="Trigger",
+        range=[-0.1, 1.1],
+        tickvals=[0, 1],
+        row=4,
+        col=1,
+    )
+
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="#333333",
+        title_text="Time (seconds)",
+        row=4,
+        col=1,
+    )
+
+    # grid layout
+    for r in [1, 2, 3, 4]:
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor="#333333",
+            row=r,
+            col=1,
+        )
+
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor="#333333",
+            row=r,
+            col=1,
+        )
+
+    fig.show()
+
+else:
+    print(
+        "Error: 'df' not found in memory. "
+        "Please run your import block first!"
+    )
+
+# analog to digital conversion
+
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+if "df" in globals():
+  # convertion from 0-4095 to 0-1
+  threshold_val = 2048
+  d_33 = (df["Sensor_33 (Most)"] > threshold_val).astype(int)
+  d_34 = (df["Sensor_34 (Medium)"] > threshold_val).astype(int)
+  d_35 = (df["Sensor_35 (Least)"] > threshold_val).astype(int)
+
+  # subplot creation
+  fig = make_subplots(
+      rows=3,
+      cols=1,
+      shared_xaxes=True,
+      subplot_titles=(
+          "Channel A: Digital Pulse (Pin 33)",
+          "Channel B: Digital Pulse (Pin 34)",
+          "Channel C: Digital Pulse (Pin 35)",
+      ),
+      vertical_spacing=0.03,
+  )
+
+  # pin 33
+  fig.add_trace(
+      go.Scatter(
+          x=df["Time (s)"],
+          y=d_33,
+          mode="lines",
+          line=dict(color="#e91e63", width=1.5, shape="hv"),
+          hovertemplate="Time: %{x}s<br>State: %{y}<extra></extra>",
+      ),
+      row=1,
+      col=1,
+  )
+
+  # pin34
+  fig.add_trace(
+      go.Scatter(
+          x=df["Time (s)"],
+          y=d_34,
+          mode="lines",
+          line=dict(color="#ff9800", width=1.5, shape="hv"),
+          hovertemplate="Time: %{x}s<br>State: %{y}<extra></extra>",
+      ),
+      row=2,
+      col=1,
+  )
+
+  # pin 35
+  fig.add_trace(
+      go.Scatter(
+          x=df["Time (s)"],
+          y=d_35,
+          mode="lines",
+          line=dict(color="#ffeb3b", width=1.5, shape="hv"),
+          hovertemplate="Time: %{x}s<br>State: %{y}<extra></extra>",
+      ),
+      row=3,
+      col=1,
+  )
+
+  # layouts
+  fig.update_layout(
+      template="plotly_dark",
+      height=800,
+      title_text=(
+          "<b>DIGITAL TELEMETRY MONITOR</b> - Binary State Waveforms"
+      ),
+      showlegend=False,
+      hovermode="x unified",
+      paper_bgcolor="rgb(17, 17, 17)",
+      plot_bgcolor="rgb(17, 17, 17)",
+  )
+
+  # digital y axis values
+  for r in [1, 2, 3]:
+    fig.update_yaxes(
+        title_text="State", range=[-0.1, 1.1], tickvals=[0, 1], row=r, col=1
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#333333", row=r, col=1)
+    fig.update_yaxes(showgrid=True, gridcolor="#333333", row=r, col=1)
+
+  fig.update_xaxes(title_text="Time (seconds)", row=3, col=1)
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+# stress sensor maps
+import numpy as np
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+if "df" in globals():
+  # probability baselines
+  threshold_val = 2048
+  p_33 = (df["Sensor_33 (Most)"] > threshold_val).mean()
+  p_34 = (df["Sensor_34 (Medium)"] > threshold_val).mean()
+  p_35 = (df["Sensor_35 (Least)"] > threshold_val).mean()
+
+  num_time_steps = len(df)
+
+  # defining stress parameters
+  noise_levels = np.linspace(0.0, 0.15, 10)
+  threshold_factors = np.linspace(0.8, 1.2, 10)
+
+  # Grids for each individual sensor
+  grid_33 = np.zeros((len(threshold_factors), len(noise_levels)))
+  grid_34 = np.zeros((len(threshold_factors), len(noise_levels)))
+  grid_35 = np.zeros((len(threshold_factors), len(noise_levels)))
+
+  np.random.seed(42)
+
+  # monte carlo sim.
+  for i, t_factor in enumerate(threshold_factors):
+    adj_thresh = threshold_val * t_factor
+    eff_p33 = (df["Sensor_33 (Most)"] > adj_thresh).mean()
+    eff_p34 = (df["Sensor_34 (Medium)"] > adj_thresh).mean()
+    eff_p35 = (df["Sensor_35 (Least)"] > adj_thresh).mean()
+
+    for j, noise in enumerate(noise_levels):
+      counts_33, counts_34, counts_35 = [], [], []
+
+      for _ in range(150):  # 150 runs per cell
+        jitter = np.random.normal(0, noise, 3)
+        s_p33 = np.clip(eff_p33 + jitter[0], 0.001, 0.999)
+        s_p34 = np.clip(eff_p34 + jitter[1], 0.001, 0.999)
+        s_p35 = np.clip(eff_p35 + jitter[2], 0.001, 0.999)
+
+        sim_33 = np.random.random(num_time_steps) < s_p33
+        sim_34 = np.random.random(num_time_steps) < s_p34
+        sim_35 = np.random.random(num_time_steps) < s_p35
+
+        counts_33.append(np.sum(sim_33))
+        counts_34.append(np.sum(sim_34))
+        counts_35.append(np.sum(sim_35))
+
+      grid_33[i, j] = np.mean(counts_33)
+      grid_34[i, j] = np.mean(counts_34)
+      grid_35[i, j] = np.mean(counts_35)
+
+  x_labels = [f"{n*100:.1f}%" for n in noise_levels]
+  y_labels = [f"{tf:.2f}x" for tf in threshold_factors]
+
+  # subplot comparison
+  fig = make_subplots(
+      rows=1,
+    cols=3,
+      subplot_titles=(
+          "Pin 33: Most Holes",
+          "Pin 34: Medium Holes",
+          "Pin 35: Least Holes",
+      ),
+      shared_yaxes=True,
+      horizontal_spacing=0.08,
+  )
+
+  # add heatmap
+  fig.add_trace(
+      go.Heatmap(
+          z=grid_33,
+          x=x_labels,
+          y=y_labels,
+          colorscale="Plasma",
+          showscale=False,
+      ),
+      row=1,
+      col=1,
+  )
+  fig.add_trace(
+      go.Heatmap(
+          z=grid_34,
+          x=x_labels,
+          y=y_labels,
+          colorscale="Plasma",
+          showscale=False,
+      ),
+      row=1,
+      col=2,
+  )
+  fig.add_trace(
+      go.Heatmap(
+          z=grid_35,
+          x=x_labels,
+          y=y_labels,
+          colorscale="Plasma",
+          colorbar=dict(title="Avg Active Count"),
+      ),
+      row=1,
+      col=3,
+  )
+
+  # layout style
+  fig.update_layout(
+      template="plotly_dark",
+      height=550,
+      title_text=(
+          "<b>INDIVIDUAL SENSOR ACTIVITY MAPS - Noise vs Threshold Sensitivity Comparison"
+      ),
+      paper_bgcolor="rgb(17, 17, 17)",
+      plot_bgcolor="rgb(17, 17, 17)",
+  )
+
+  fig.update_xaxes(title_text="Noise Jitter Intensity", row=1, col=2)
+  fig.update_yaxes(title_text="Threshold Multiplier", row=1, col=1)
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+# monte carlo sim of 10k sim.
+import numpy as np
+import plotly.graph_objects as go
+
+if "df" in globals():
+  # determine baseline probability
+  threshold_val = 2048
+  p_33 = (df["Sensor_33 (Most)"] > threshold_val).mean()
+  p_34 = (df["Sensor_34 (Medium)"] > threshold_val).mean()
+  p_35 = (df["Sensor_35 (Least)"] > threshold_val).mean()
+
+  print(f"Baseline active probabilities learned from data:")
+  print(f" - Pin 33 (Most): {p_33:.3f}")
+  print(f" - Pin 34 (Medium): {p_34:.3f}")
+  print(f" - Pin 35 (Least): {p_35:.3f}")
+
+  # monte carlo parameters
+  num_simulations = 10000
+  num_time_steps = len(df)
+
+  anomaly_counts = []
+
+  np.random.seed(42)  # result
+  for _ in range(num_simulations):
+    # adding randomness in form of jitter
+    jitter = np.random.normal(0, 0.02, 3)
+    sim_p33 = np.clip(p_33 + jitter[0], 0.01, 0.99)
+    sim_p34 = np.clip(p_34 + jitter[1], 0.01, 0.99)
+    sim_p35 = np.clip(p_35 + jitter[2], 0.01, 0.99)
+
+    # simulate random states
+    sim_33 = np.random.random(num_time_steps) < sim_p33
+    sim_34 = np.random.random(num_time_steps) < sim_p34
+    sim_35 = np.random.random(num_time_steps) < sim_p35
+
+    # sum occurances
+    sim_anomalies = np.sum(sim_33 & sim_34 & sim_35)
+    anomaly_counts.append(sim_anomalies)
+
+  # analysis
+  mean_anomalies = np.mean(anomaly_counts)
+  median_anomalies = np.median(anomaly_counts)
+  max_anomalies = np.max(anomaly_counts)
+  min_anomalies = np.min(anomaly_counts)
+
+  print("\n--- Monte Carlo Simulation Results (10,000 Runs) ---")
+  print(f"Average expected anomalies: {mean_anomalies:.1f}")
+  print(f"Most likely scenario (Median): {median_anomalies:.0f}")
+  print(f"Observed Range across simulations: {min_anomalies} to {max_anomalies}")
+
+  # histogram plot
+  fig = go.Figure(
+      data=[
+          go.Histogram(
+              x=anomaly_counts,
+              marker_color="#00e5ff",
+              opacity=0.8,
+              nbinsx=40,
+          )
+      ]
+  )
+
+  fig.update_layout(
+      template="plotly_dark",
+      height=500,
+      title_text=(
+          "<b>MONTE CARLO SIMULATION (10k Runs)</b> - Anomaly Count"
+          " Distribution"
+      ),
+      xaxis_title="Number of Simultaneous Anomalies Detected",
+      yaxis_title="Frequency (Trial Count)",
+      paper_bgcolor="rgb(17, 17, 17)",
+      plot_bgcolor="rgb(17, 17, 17)",
+      hovermode="x",
+  )
+
+  fig.update_xaxes(showgrid=True, gridcolor="#333333")
+  fig.update_yaxes(showgrid=True, gridcolor="#333333")
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+ #3d plot
+import numpy as np
+import plotly.graph_objects as go
+
+if "df" in globals():
+  # grid sim.
+  threshold_val = 2048
+  p_33 = (df["Sensor_33 (Most)"] > threshold_val).mean()
+  p_34 = (df["Sensor_34 (Medium)"] > threshold_val).mean()
+  p_35 = (df["Sensor_35 (Least)"] > threshold_val).mean()
+  num_time_steps = len(df)
+
+  noise_levels = np.linspace(0.0, 0.15, 15)
+  threshold_factors = np.linspace(0.8, 1.2, 15)
+  z_grid = np.zeros((len(threshold_factors), len(noise_levels)))
+
+  np.random.seed(42)
+  for i, t_factor in enumerate(threshold_factors):
+    adj_thresh = threshold_val * t_factor
+    eff_p33 = (df["Sensor_33 (Most)"] > adj_thresh).mean()
+    eff_p34 = (df["Sensor_34 (Medium)"] > adj_thresh).mean()
+    eff_p35 = (df["Sensor_35 (Least)"] > adj_thresh).mean()
+
+    for j, noise in enumerate(noise_levels):
+      counts = []
+      for _ in range(100):
+        jitter = np.random.normal(0, noise, 3)
+        s33 = np.random.random(num_time_steps) < np.clip(
+            eff_p33 + jitter[0], 0.001, 0.999
+        )
+        s34 = np.random.random(num_time_steps) < np.clip(
+            eff_p34 + jitter[1], 0.001, 0.999
+        )
+        s35 = np.random.random(num_time_steps) < np.clip(
+            eff_p35 + jitter[2], 0.001, 0.999
+        )
+        counts.append(np.sum(s33 & s34 & s35))
+      z_grid[i, j] = np.mean(counts)
+
+  x_labels = [f"{n*100:.1f}%" for n in noise_levels]
+  y_labels = [f"{tf:.2f}x" for tf in threshold_factors]
+
+  # create 3d plot
+  fig = go.Figure(
+      data=[
+          go.Surface(
+              z=z_grid,
+              x=noise_levels * 100,
+              y=threshold_factors,
+              colorscale="Plasma",
+          )
+      ]
+  )
+
+  # 3d layout
+  fig.update_layout(
+      template="plotly_dark",
+      height=700,
+      title_text=(
+        "<b>3D SENSOR SENSITIVITY LANDSCAPE</b> - Anomaly Response"
+      ),
+      scene=dict(
+          xaxis_title="Noise Jitter Intensity (%)",
+          yaxis_title="Threshold Multiplier (x)",
+          zaxis_title="Avg Anomalies (Z-Axis)",
+          bgcolor="rgb(17, 17, 17)",
+          xaxis=dict(gridcolor="#333333"),
+          yaxis=dict(gridcolor="#333333"),
+          zaxis=dict(gridcolor="#333333"),
+      ),
+      paper_bgcolor="rgb(17, 17, 17)",
+  )
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+#monte carlo activity map
+import numpy as np
+import plotly.graph_objects as go
+
+if "df" in globals():
+  # probability baseline
+  threshold_val = 2048
+  p_33 = (df["Sensor_33 (Most)"] > threshold_val).mean()
+  p_34 = (df["Sensor_34 (Medium)"] > threshold_val).mean()
+  p_35 = (df["Sensor_35 (Least)"] > threshold_val).mean()
+
+  num_time_steps = len(df)
+
+  # activity parameter
+  noise_levels = np.linspace(0.0, 0.15, 10)
+  
+  threshold_factors = np.linspace(0.8, 1.2, 10)
+
+  stress_grid = np.zeros((len(threshold_factors), len(noise_levels)))
+
+  np.random.seed(42)
+
+  # monte carlo sim. implementation
+  for i, t_factor in enumerate(threshold_factors):
+    # threshold adjustment
+    adj_thresh = threshold_val * t_factor
+    eff_p33 = (df["Sensor_33 (Most)"] > adj_thresh).mean()
+    eff_p34 = (df["Sensor_34 (Medium)"] > adj_thresh).mean()
+    eff_p35 = (df["Sensor_35 (Least)"] > adj_thresh).mean()
+
+    for j, noise in enumerate(noise_levels):
+      trial_counts = []
+      for _ in range(200):  # 200 runs per grid cell for performance
+        jitter = np.random.normal(0, noise, 3)
+        s_p33 = np.clip(eff_p33 + jitter[0], 0.001, 0.999)
+        s_p34 = np.clip(eff_p34 + jitter[1], 0.001, 0.999)
+        s_p35 = np.clip(eff_p35 + jitter[2], 0.001, 0.999)
+
+        sim_33 = np.random.random(num_time_steps) < s_p33
+        sim_34 = np.random.random(num_time_steps) < s_p34
+        sim_35 = np.random.random(num_time_steps) < s_p35
+
+        trial_counts.append(np.sum(sim_33 & sim_34 & sim_35))
+
+      # anomaly count
+      stress_grid[i, j] = np.mean(trial_counts)
+
+  # 4. plot activity map
+  fig = go.Figure(
+      data=go.Heatmap(
+          z=stress_grid,
+          x=[f"{n*100:.1f}%" for n in noise_levels],
+          y=[f"{tf:.2f}x" for tf in threshold_factors],
+          colorscale="Plasma",
+          colorbar=dict(title="Avg Anomalies"),
+      )
+  )
+
+  fig.update_layout(
+      template="plotly_dark",
+      height=600,
+      title_text=(
+         "<b>MOST PROBABLE SYSTEM ACTIVITY MAP</b> - Anomaly Sensitivity Under Noise & Threshold Variation"
+      ),
+      xaxis_title="Environmental Noise Jitter Intensity",
+      yaxis_title="Threshold Sensitivity Multiplier",
+      paper_bgcolor="rgb(17, 17, 17)",
+      plot_bgcolor="rgb(17, 17, 17)",
+  )
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+# cumulative detection
+import numpy as np
+import plotly.graph_objects as go
+
+if "df" in globals():
+  
+  v_33 = df["Sensor_33 (Most)"] * (5.0 / 4095.0)
+  v_34 = df["Sensor_34 (Medium)"] * (5.0 / 4095.0)
+  v_35 = df["Sensor_35 (Least)"] * (5.0 / 4095.0)
+
+  threshold_v = 2.5
+  anomaly_trigger = (
+      (v_33 > threshold_v) & (v_34 > threshold_v) & (v_35 > threshold_v)
+  ).astype(int)
+
+  # cumulative anomaly load
+  weight_per_event = 1.0  
+  cumulative_load = np.cumsum(anomaly_trigger * weight_per_event)
+
+  # plot telemetry activity
+  fig = go.Figure()
+
+  fig.add_trace(
+      go.Scatter(
+          x=df["Time (s)"],
+          y=cumulative_load,
+          mode="lines",
+          line=dict(color="#00e5ff", width=2.5),
+          fill="tozeroy",
+          fillcolor="rgba(0, 229, 255, 0.15)",
+          hovertemplate="Time: %{x}s<br>Total Anomalies Logged: %{y}<extra></extra>",
+      )
+  )
+
+  fig.update_layout(
+      template="plotly_dark",
+      height=450,
+      title_text=(
+          "<b>TELEMETRY STRESS MONITOR - Cumulative Anomaly & Error Accumulation"
+      ),
+      xaxis_title="Time (seconds)",
+      yaxis_title="Total Anomaly Count (Running Total)",
+      paper_bgcolor="rgb(17, 17, 17)",
+      plot_bgcolor="rgb(17, 17, 17)",
+      hovermode="x unified",
+  )
+
+  fig.update_xaxes(showgrid=True, gridcolor="#333333")
+  fig.update_yaxes(showgrid=True, gridcolor="#333333")
+
+  fig.show()
+
+else:
+  print(
+      "Error: 'df' not found in memory. Please run your import block first!"
+  )
+
+
