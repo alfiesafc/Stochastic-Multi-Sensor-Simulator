@@ -34,7 +34,7 @@ View this document under 'ss.docx'
 ---
 
 ## Scripts
-*'esp32_firmware' -> ESP32 C++ firmware consisting of handling data collection and storage as well as serial output
-*'python_dashboard' -> Python Script for Data Processing, Statistical Analysis and Plotly Visualisation
+* **'esp32_firmware'** ESP32 C++ firmware consisting of handling data collection and storage as well as serial output
+* **'python_dashboard'** Python Script for Data Processing, Statistical Analysis and Plotly Visualisation
 
 ---
